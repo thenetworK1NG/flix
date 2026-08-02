@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="description" content="FLIX - stream movies and series">
+  <title>FLIX</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <div id="intro" aria-hidden="true">
+    <div class="intro-logo">
+      <span>F</span><span>L</span><span>I</span><span>X</span>
+    </div>
+  </div>
+
+  <header class="topbar" id="topbar">
+    <div class="brand" id="brand">FLIX</div>
+    <nav class="nav">
+      <button class="nav-btn active" data-nav="home">Home</button>
+      <button class="nav-btn" data-nav="movies">Movies</button>
+      <button class="nav-btn" data-nav="tv">TV</button>
+      <button class="nav-btn" data-nav="links">Torrents</button>
+    </nav>
+    <form class="search" id="searchForm" autocomplete="off">
+      <input id="searchInput" type="search" placeholder="Search titles...">
+      <button class="search-btn" type="submit" aria-label="Search">&#128269;</button>
+    </form>
+  </header>
+
+  <main>
+    <section id="section-home" class="section active">
+      <div id="heroBanner"></div>
+
+      <div class="row-block">
+        <h2 class="row-title">Top 10 on FLIX</h2>
+        <div class="row-scroll" id="top10Row"></div>
+      </div>
+
+      <div class="row-block">
+        <h2 class="row-title">Trending Movies</h2>
+        <div class="row-scroll" id="moviesRow"></div>
+      </div>
+
+      <div class="row-block">
+        <h2 class="row-title">Trending Series</h2>
+        <div class="row-scroll" id="tvRow"></div>
+      </div>
+    </section>
+
+    <section id="section-movies" class="section">
+      <div class="page-head">
+        <h1>Movies</h1>
+        <p>Top 100 trending films on the Pirate Bay</p>
+      </div>
+      <div class="grid" id="moviesGrid"></div>
+    </section>
+
+    <section id="section-tv" class="section">
+      <div class="page-head">
+        <h1>TV Series</h1>
+        <p>Top 100 trending shows on the Pirate Bay</p>
+      </div>
+      <div class="grid" id="tvGrid"></div>
+    </section>
+
+    <section id="section-search" class="section">
+      <div class="page-head">
+        <h1>Search results</h1>
+        <p id="searchMeta"></p>
+      </div>
+      <div class="grid" id="searchGrid"></div>
+    </section>
+
+    <section id="section-links" class="section">
+      <div class="page-head">
+        <h1>Active torrents</h1>
+        <p>Currently streaming files and peers</p>
+      </div>
+      <div id="linksPanel"></div>
+    </section>
+  </main>
+
+  <div class="spinner" id="spinner" hidden>
+    <div class="spinner-box"></div>
+    <p id="spinnerText">Loading...</p>
+  </div>
+
+  <div class="modal-backdrop" id="modalBackdrop" hidden>
+    <div class="modal" id="detailModal">
+      <div class="modal-head" id="detailHead">
+        <button class="close-btn" data-close>&#10005;</button>
+        <h2 id="detailTitle"></h2>
+      </div>
+      <div class="modal-body" id="detailBody"></div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="playerBackdrop" hidden>
+    <div class="modal player-modal" id="playerModal">
+      <div class="player-head">
+        <h3 id="playerTitle"></h3>
+        <button class="close-btn" data-close>&#10005;</button>
+      </div>
+      <div class="player-wrap">
+        <video id="player" controls autoplay playsinline></video>
+        <p class="player-msg" id="playerStatus">Connecting...</p>
+        <p class="player-hint" id="playerHint">No sound? The file may use an unsupported audio codec (AC3/DTS). Copy the stream URL and open it in VLC.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
