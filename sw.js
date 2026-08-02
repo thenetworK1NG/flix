@@ -1,14 +1,14 @@
 'use strict';
 
-const CACHE = 'stremio-web-v8';
+const CACHE = 'stremio-web-v9';
 const ASSETS = [
-  '/',
-  '/index.html',
-  '/styles.css',
-  '/app.js',
-  '/manifest.json',
-  '/icons/icon-192.png',
-  '/icons/icon-512.png',
+  './',
+  './index.html',
+  './styles.css',
+  './app.js',
+  './manifest.json',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
 ];
 
 self.addEventListener('install', (e) => {
@@ -29,11 +29,6 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
 
   if (url.origin !== location.origin) return;
-
-  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/stream/')) {
-    e.respondWith(fetch(e.request));
-    return;
-  }
 
   e.respondWith(
     caches.match(e.request).then((cached) => {

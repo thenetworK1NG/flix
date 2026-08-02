@@ -1,16 +1,28 @@
-# Stremio Web
+# FLIX (Stremio Web)
 
-A Stremio-style web app (PWA) to search and stream torrents from The Pirate Bay.
+A Stremio-style web app (PWA) to search and stream torrents from The Pirate Bay. Runs entirely in the browser and deploys to **GitHub Pages** — no server required.
 
 ## What it does
 
-- Searches The Pirate Bay (via the apibay.org API) with a Netflix/Stremio-style dark UI.
+- Searches The Pirate Bay (via the `apibay.org` API) with a Netflix/Stremio-style dark UI.
 - Home shows the top 100 torrents; Movies and TV Show tabs filter them by category.
 - Click any torrent to see its file list, copy/open a magnet link, or **play it directly** in the browser.
-- Playback is streamed through a local WebTorrent engine (the same approach Stremio uses) with HTTP range requests, so you can seek without downloading the whole file.
+- Playback uses **client-side WebTorrent** (WebRTC/WebSocket peers), so you don't need a backend server.
 - Installable as a PWA: open the app, click the install icon in your browser's address bar.
 
-## Run it
+## Live site
+
+https://thenetwork1ng.github.io/flix/
+
+## Run it locally
+
+You can serve the static files with any static server:
+
+```
+npx serve .
+```
+
+Or run the old Node-based server (streaming via server-side WebTorrent + ffmpeg):
 
 ```
 npm install
@@ -19,19 +31,27 @@ npm start
 
 Then open http://localhost:8000
 
-On Windows you can just double-click `start.bat`.
+## Deploy to GitHub Pages
+
+1. Push this repo to GitHub (currently `thenetworK1NG/flix`, branch `main`).
+2. In the repo: **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+3. Push to `main` (or run the workflow manually via **Actions → Deploy to GitHub Pages → Run workflow**). The workflow stages only the static files and deploys them.
+4. Your site is live at `https://<user>.github.io/flix/`.
+
+The workflow file is `.github/workflows/pages.yml`.
 
 ## Files
 
-- `server.js` - serves the app, proxies Pirate Bay search, streams torrents (WebTorrent)
-- `index.html` / `styles.css` / `app.js` - the PWA frontend
+- `index.html` / `styles.css` / `app.js` - the PWA frontend (fully static)
 - `manifest.json` / `sw.js` - PWA manifest + service worker
 - `icons/` - app icons (regenerate with `npm run install-icons`)
 - `tools/make-icons.js` - icon generator
+- `server.js` - optional legacy Node server (server-side streaming + MKV transcode)
+- `.github/workflows/pages.yml` - GitHub Pages deploy
 
 ## Notes
 
-- Streaming speed depends on peers for each torrent. Well-seeded releases start within seconds; fresh/rare releases may buffer or fail.
-- `MKV` files play in modern browsers (Chrome/Edge/Firefox). For maximum compatibility pick an `MP4` release.
-- Some browser install options require HTTPS; installing from `http://localhost` works without it.
+- Browsers talk to `apibay.org` and `v3-cinemeta.strem.io` directly (both allow CORS).
+- Playback depends on peers and on **WebRTC/WebSocket trackers**. Well-seeded releases start quickly; the browser can only reach peers that speak WebTorrent, so some torrents may not start — use the magnet link with a desktop app (e.g. VLC) for those.
+- Browsers can only play `MP4`/`WebM`/`M4A`/`MP3` etc. **MKV/AVI/MOV files are flagged and need VLC** (copy the magnet).
 - Only stream content you are legally allowed to access.

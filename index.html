@@ -80,7 +80,7 @@
     <section id="section-links" class="section">
       <div class="page-head">
         <h1>Active torrents</h1>
-        <p>Currently streaming files and peers</p>
+        <p>Currently playing files, progress and peers</p>
       </div>
       <div id="linksPanel"></div>
     </section>
@@ -110,13 +110,14 @@
       <div class="player-wrap">
         <video id="player" controls autoplay playsinline></video>
         <p class="player-msg" id="playerStatus">Connecting...</p>
-        <p class="player-hint" id="playerHint">No sound? The file may use an unsupported audio codec (AC3/DTS). Copy the stream URL and open it in VLC.</p>
+        <p class="player-hint" id="playerHint">Playing in your browser over WebTorrent. No sound or won't play? Use the magnet link in VLC.</p>
       </div>
     </div>
   </div>
 
   <div class="toast" id="toast" hidden></div>
 
+  <script src="https://cdn.jsdelivr.net/npm/webtorrent@1.9.7/webtorrent.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

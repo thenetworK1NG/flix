@@ -5,12 +5,27 @@ const CATS = {
   tv: new Set([205, 208]),
 };
 
+const TRACKERS = [
+  'udp://tracker.opentrackr.org:1337/announce',
+  'udp://open.demonii.com:1337/announce',
+  'udp://tracker.openbittorrent.com:6969/announce',
+  'udp://tracker.torrent.eu.org:451/announce',
+  'udp://explodie.org:6969/announce',
+  'wss://tracker.openwebtorrent.com',
+  'wss://tracker.btorrent.xyz',
+  'wss://tracker.fastcast.nz',
+];
+
+const BROWSER_VIDEO = new Set(['mp4', 'm4v', 'webm', 'ogv']);
+const BROWSER_AUDIO = new Set(['mp3', 'm4a', 'aac', 'ogg', 'opus', 'wav']);
+
 const state = {
   top: [],
   items: new Map(),
   metas: {},
+  client: null,
+  renderer: null,
   activeStreams: new Map(),
-  ffmpeg: false,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -24,6 +39,10 @@ function fmtSize(bytes) {
   let n = bytes;
   while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
   return n.toFixed(i > 1 ? 1 : 0) + ' ' + units[i];
+}
+
+function fmtSpeed(bytes) {
+  return fmtSize(bytes) + '/s';
 }
 
 function fmtDate(ts) {
@@ -82,11 +101,53 @@ function showSpinner(on, label) {
   if (label) $('#spinnerText').textContent = label;
 }
 
-async function api(path) {
-  const res = await fetch(path);
-  const data = await res.json().catch(() => ({ error: 'bad response' }));
-  if (data.error) throw new Error(data.error);
-  return data;
+function extOf(name) {
+  return (String(name).split('.').pop() || '').toLowerCase();
+}
+
+function extToMime(name) {
+  const ext = extOf(name);
+  const video = {
+    mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm', ogv: 'video/ogg',
+    mkv: 'video/x-matroska', avi: 'video/x-msvideo', mov: 'video/quicktime',
+    ts: 'video/mp2t', m2ts: 'video/mp2t', flv: 'video/x-flv', wmv: 'video/x-ms-wmv',
+  };
+  const audio = {
+    mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg',
+    opus: 'audio/ogg', flac: 'audio/flac', wav: 'audio/wav',
+  };
+  return video[ext] || audio[ext] || null;
+}
+
+function browserPlayable(name) {
+  const ext = extOf(name);
+  return BROWSER_VIDEO.has(ext) || BROWSER_AUDIO.has(ext);
+}
+
+function magnet(hash, name) {
+  const dn = encodeURIComponent(name || hash);
+  return `magnet:?xt=urn:btih:${hash}&dn=${dn}&tr=${TRACKERS.map((t) => encodeURIComponent(t)).join('&tr=')}`;
+}
+
+function normalize(rows) {
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    hash: r.info_hash,
+    seeds: parseInt(r.seeders, 10) || 0,
+    leeches: parseInt(r.leechers, 10) || 0,
+    size: parseInt(r.size, 10) || 0,
+    added: parseInt(r.added, 10) || 0,
+    category: parseInt(r.category, 10) || 0,
+    imdb: r.imdb || '',
+    magnet: magnet(r.info_hash, r.name),
+  }));
+}
+
+async function fetchJSON(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('upstream ' + res.status);
+  return res.json();
 }
 
 // ---------- cards ----------
@@ -177,23 +238,56 @@ function applyPoster(card, meta) {
   p.insertBefore(img, p.firstChild);
 }
 
+async function fetchMeta(imdb) {
+  if (metaCache.has(imdb)) return metaCache.get(imdb);
+  const tryFetch = async (type) => {
+    try {
+      const j = await fetchJSON(`https://v3-cinemeta.strem.io/meta/${type}/${imdb}.json`);
+      const m = j && j.meta;
+      if (!m) return null;
+      return {
+        imdb: imdb,
+        name: m.name,
+        year: m.year,
+        type: m.type || type,
+        poster: m.poster || '',
+        background: m.background || m.poster || '',
+      };
+    } catch (e) {
+      return null;
+    }
+  };
+  const [movie, series] = await Promise.all([tryFetch('movie'), tryFetch('series')]);
+  let meta = movie;
+  if ((movie && !movie.poster) || !movie) meta = series || movie;
+  if (meta) metaCache.set(imdb, meta);
+  return meta;
+}
+
+async function fetchMetas(ids) {
+  const uniq = [...new Set(ids.filter((i) => i && /^tt\d+$/.test(i)))];
+  const metas = {};
+  let i = 0;
+  const worker = async () => {
+    while (i < uniq.length) {
+      const id = uniq[i++];
+      const meta = await fetchMeta(id);
+      if (meta) metas[id] = meta;
+    }
+  };
+  await Promise.all(Array.from({ length: 6 }, worker));
+  return metas;
+}
+
 async function scheduleMetaDrain() {
   if (metaBusy) return;
   metaBusy = true;
   while (metaQueue.length) {
     const batch = metaQueue.splice(0, 8);
     await Promise.all(batch.map(async ({ card, imdb }) => {
-      if (metaCache.has(imdb)) {
-        applyPoster(card, metaCache.get(imdb));
-        return;
-      }
-      try {
-        const j = await api('/api/meta/' + imdb);
-        metaCache.set(imdb, j);
-        applyPoster(card, j);
-      } catch (e) {
-        applyDefault(card);
-      }
+      const meta = await fetchMeta(imdb);
+      if (meta) applyPoster(card, meta);
+      else applyDefault(card);
     }));
     await new Promise((r) => setTimeout(r, 40));
   }
@@ -275,12 +369,12 @@ function renderHero(t) {
 async function loadHome() {
   showSpinner(true, 'Loading FLIX...');
   try {
-    const data = await api('/api/top');
-    state.top = data.results || [];
+    const rows = await fetchJSON('https://apibay.org/precompiled/data_top100_all.json');
+    state.top = normalize(Array.isArray(rows) ? rows : []);
     const imdbs = [...new Set(state.top.map((t) => t.imdb).filter((i) => i && /^tt\d+$/.test(i)))];
-    const metaData = await api('/api/metas?ids=' + encodeURIComponent(imdbs.join(',')));
-    state.metas = metaData.metas || {};
-    Object.keys(state.metas).forEach((k) => metaCache.set(k, state.metas[k]));
+    const metas = await fetchMetas(imdbs);
+    state.metas = metas;
+    Object.keys(metas).forEach((k) => metaCache.set(k, metas[k]));
 
     const withImg = state.top.filter((t) => state.metas[t.imdb] && state.metas[t.imdb].poster);
     const movies = withImg.filter((t) => CATS.movies.has(t.category));
@@ -294,8 +388,8 @@ async function loadHome() {
     renderGrid($('#moviesGrid'), movies, 'No movie torrents found.');
     renderGrid($('#tvGrid'), tv, 'No TV torrents found.');
   } catch (e) {
-    renderGrid($('#moviesGrid'), [], 'Failed to reach The Pirate Bay API. Is the server running?');
-    renderGrid($('#tvGrid'), [], 'Failed to reach The Pirate Bay API. Is the server running?');
+    renderGrid($('#moviesGrid'), [], 'Failed to reach The Pirate Bay API. Check your connection.');
+    renderGrid($('#tvGrid'), [], 'Failed to reach The Pirate Bay API. Check your connection.');
     showToast('Failed to load: ' + e.message);
   } finally {
     showSpinner(false);
@@ -309,17 +403,50 @@ async function doSearch(q) {
   switchSection('search');
   renderGrid($('#searchGrid'), []);
   try {
-    const data = await api('/api/search?q=' + encodeURIComponent(q));
-    const list = data.results || [];
-    meta.textContent = data.notice
-      ? data.notice
-      : `${list.length} result${list.length === 1 ? '' : 's'} found for "${q}".`;
+    const rows = await fetchJSON('https://apibay.org/q.php?q=' + encodeURIComponent(q));
+    const raw = Array.isArray(rows) ? rows : [];
+    if (raw.length === 1 && /no results/i.test(raw[0].name)) {
+      meta.textContent = 'No results found. Try a different spelling.';
+      renderGrid($('#searchGrid'), [], 'No results found.');
+      return;
+    }
+    const list = normalize(raw);
+    meta.textContent = `${list.length} result${list.length === 1 ? '' : 's'} found for "${q}".`;
     renderGrid($('#searchGrid'), list, 'No results. Try a different spelling.');
   } catch (e) {
     meta.textContent = 'Search failed: ' + e.message;
     renderGrid($('#searchGrid'), [], 'Failed to reach The Pirate Bay API.');
   } finally {
     showSpinner(false);
+  }
+}
+
+// ---------- webtorrent ----------
+function getTorrent(t) {
+  if (!state.client) return Promise.reject(new Error('WebTorrent not loaded - check your connection'));
+  const magnetURI = t.magnet;
+  let torrent = state.client.get(magnetURI);
+  if (!torrent) torrent = state.client.add(magnetURI);
+  return new Promise((resolve, reject) => {
+    if (torrent.ready || torrent.metadata) return resolve(torrent);
+    const timer = setTimeout(() => reject(new Error('metadata timeout - no peers yet, try again')), 45000);
+    torrent.once('ready', () => { clearTimeout(timer); resolve(torrent); });
+    torrent.once('error', (e) => { clearTimeout(timer); reject(e || new Error('torrent error')); });
+  });
+}
+
+function torrentFiles(torrent) {
+  return torrent.files
+    .map((f, i) => ({ index: i, name: f.name, size: f.length, type: extToMime(f.name) }))
+    .filter((f) => f.type);
+}
+
+function copyMagnet(t) {
+  const uri = t.magnet || magnet(t.hash, t.name);
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(uri).then(() => showToast('Magnet link copied.'), () => prompt('Copy this magnet link:', uri));
+  } else {
+    prompt('Copy this magnet link:', uri);
   }
 }
 
@@ -338,7 +465,6 @@ async function openDetail(t) {
   body.innerHTML = `
     <div class="detail-actions">
       <button class="btn-play" id="playBtn">${PLAY_ICON.replace('width="100" height="100"', 'width="18" height="18"')} Play now</button>
-      <button class="btn-dl" id="streamUrlBtn">Copy stream URL</button>
       <button class="btn-dl" id="magnetBtn">Copy magnet</button>
       <button class="btn-dl" id="openBtn">Open magnet</button>
     </div>
@@ -357,25 +483,12 @@ async function openDetail(t) {
   modal.hidden = false;
 
   $('#playBtn').onclick = () => { modal.hidden = true; playTorrent(t); };
-  $('#magnetBtn').onclick = async () => {
-    try { await navigator.clipboard.writeText(t.magnet); showToast('Magnet link copied.'); }
-    catch { prompt('Copy this magnet link:', t.magnet); }
-  };
-  $('#openBtn').onclick = () => {
-    window.open('magnet:?' + new URLSearchParams({ xt: 'urn:btih:' + t.hash, dn: t.name }).toString(), '_blank');
-  };
+  $('#magnetBtn').onclick = () => copyMagnet(t);
+  $('#openBtn').onclick = () => window.open(t.magnet, '_blank');
 
   try {
-    const info = await api('/api/torrent/' + t.hash);
-    const firstVideo = (info.files || []).find((f) => f.type.startsWith('video')) ||
-      (info.files || []).find((f) => f.type.startsWith('audio'));
-    $('#streamUrlBtn').onclick = async () => {
-      const index = firstVideo ? firstVideo.index : 0;
-      const url = `${location.origin}/stream/${info.hash}/${index}`;
-      try { await navigator.clipboard.writeText(url); showToast('Stream URL copied - paste into VLC.'); }
-      catch { prompt('Stream URL (open in VLC):', url); }
-    };
-    renderFiles(body, info);
+    const torrent = await getTorrent(t);
+    renderFiles(body, torrent, t);
   } catch (e) {
     $('#filesLoading').textContent = 'Playback unavailable: ' + e.message + '. Use the magnet link with a torrent app instead.';
   }
@@ -384,11 +497,17 @@ async function openDetail(t) {
 async function playTorrent(t) {
   showSpinner(true, 'Connecting to peers...');
   try {
-    const info = await api('/api/torrent/' + t.hash);
-    const media = (info.files || []).filter((f) => f.type.startsWith('video') || f.type.startsWith('audio'));
+    const torrent = await getTorrent(t);
+    const media = torrentFiles(torrent).filter((f) => f.type.startsWith('video') || f.type.startsWith('audio'));
     if (!media.length) throw new Error('no playable media files in this torrent');
-    const pick = media.find((f) => f.type.startsWith('video')) || media[0];
-    startStream({ hash: t.hash, name: info.name || t.name, index: pick.index, transcode: /\.mkv$/i.test(pick.name) });
+    const pick = media.find((f) => f.type.startsWith('video') && browserPlayable(f.name)) ||
+      media.find((f) => f.type.startsWith('video')) ||
+      media[0];
+    if (!browserPlayable(pick.name)) {
+      alert('Browsers cannot play ' + extOf(pick.name).toUpperCase() + ' files. Use the magnet link with VLC instead.');
+      return;
+    }
+    startStream(torrent, pick, torrent.name || t.name);
   } catch (e) {
     alert('Could not start stream: ' + e.message + '. Try the magnet link with a torrent app instead.');
   } finally {
@@ -396,10 +515,11 @@ async function playTorrent(t) {
   }
 }
 
-function renderFiles(container, info) {
+function renderFiles(container, torrent, t) {
   const host = container.querySelector('.detail-files');
-  const videos = (info.files || []).filter((f) => f.type.startsWith('video'));
-  const others = (info.files || []).filter((f) => f.type.startsWith('audio'));
+  const files = torrentFiles(torrent);
+  const videos = files.filter((f) => f.type.startsWith('video'));
+  const others = files.filter((f) => f.type.startsWith('audio'));
 
   if (!videos.length && !others.length) {
     host.innerHTML = '<h4>Files</h4><p class="empty-note">No playable files found in this torrent.</p>';
@@ -412,59 +532,79 @@ function renderFiles(container, info) {
     ...others.map((f) => ({ ...f, icon: '♪' })),
   ];
   all.forEach((f) => {
-    const mkv = /\.mkv$/i.test(f.name);
-    const directBtn = mkv
-      ? `<button class="tc-btn" title="Streams the file as-is (seeking works, but audio may not play)">Direct</button>`
-      : '';
-    html += `<div class="file-row play-file" data-hash="${info.hash}" data-index="${f.index}" data-name="${esc(f.name)}" data-mkv="${mkv ? 1 : 0}">
+    const playable = browserPlayable(f.name);
+    const badge = playable
+      ? '<button class="play-btn">Play</button>'
+      : '<button class="tc-btn" title="Browsers cannot play this format - open the magnet in VLC">VLC</button>';
+    const size = playable ? fmtSize(f.size) : `${fmtSize(f.size)} · VLC only`;
+    html += `<div class="file-row play-file" data-hash="${t.hash}" data-index="${f.index}" data-playable="${playable ? 1 : 0}">
       <span class="fname">${f.icon} ${esc(f.name)}</span>
-      <span class="fsize">${fmtSize(f.size)}</span>
-      <span class="row-btns">
-        <button class="play-btn">Play${mkv ? ' with sound' : ''}</button>
-        ${directBtn}
-      </span>
+      <span class="fsize">${size}</span>
+      <span class="row-btns">${badge}</span>
     </div>`;
   });
   host.innerHTML = html;
 
   $$('.play-file').forEach((row) => {
-    const mkv = row.dataset.mkv === '1';
-    const play = (transcode) => {
+    const play = () => {
       $('#modalBackdrop').hidden = true;
-      startStream({ hash: row.dataset.hash, name: row.dataset.name, index: row.dataset.index, transcode });
+      const file = torrent.files[parseInt(row.dataset.index, 10)];
+      if (file) startStream(torrent, file, file.name);
     };
-    row.querySelector('.play-btn').onclick = (e) => { e.stopPropagation(); play(mkv); };
-    const direct = row.querySelector('.tc-btn');
-    if (direct) direct.onclick = (e) => { e.stopPropagation(); play(false); };
-    row.onclick = () => play(mkv);
+    row.querySelector('.play-btn, .tc-btn').onclick = (e) => {
+      e.stopPropagation();
+      if (row.dataset.playable === '1') play();
+      else copyMagnet(t);
+    };
+    row.onclick = () => {
+      if (row.dataset.playable === '1') play();
+      else copyMagnet(t);
+    };
   });
 }
 
 // ---------- streaming ----------
-function startStream(t) {
-  const index = t.index !== undefined ? t.index : 0;
-  const key = `${t.hash}/${index}/${t.transcode ? 'tc' : 'raw'}`;
+function destroyRenderer() {
+  if (state.renderer) {
+    try { state.renderer.remove(); } catch (e) {}
+    state.renderer = null;
+  }
+}
+
+function startStream(torrent, file, name) {
+  if (!state.client) {
+    showToast('WebTorrent unavailable');
+    return;
+  }
+  destroyRenderer();
   const player = $('#player');
-  $('#playerTitle').textContent = t.name;
-  $('#playerStatus').textContent = t.transcode ? 'Converting audio...' : 'Connecting to peers...';
-  $('#playerHint').textContent = t.transcode
-    ? 'Audio is being converted to a compatible format (AAC).'
-    : 'No sound? MKV files often use AC3/DTS audio the browser can\u2019t play. Click "Play with sound".';
+  $('#playerTitle').textContent = name || torrent.name;
+  $('#playerStatus').textContent = 'Connecting to peers...';
+  $('#playerHint').textContent = 'Playing in your browser over WebTorrent. No sound or won\'t play? Use the magnet link in VLC.';
   $('#playerBackdrop').hidden = false;
 
-  const url = `${t.transcode ? '/transcode' : '/stream'}/${t.hash}/${index}`;
-  player.src = url;
-  player.load();
-  player.play().catch(() => {});
+  player.src = '';
+  file.renderTo(player, { autoplay: true }, (err, renderer) => {
+    if (err) {
+      $('#playerStatus').textContent = 'Could not render: ' + (err.message || 'unknown error');
+      return;
+    }
+    state.renderer = renderer;
+  });
 
-  state.activeStreams.set(key, { name: t.name, url, transcode: !!t.transcode });
-  renderActiveStreams();
+  const onDownload = () => {
+    $('#playerStatus').textContent = torrent.done ? 'Download complete' : `Streaming... ${fmtSpeed(torrent.downloadSpeed)}`;
+  };
+  torrent.on('download', onDownload);
+  torrent.on('done', onDownload);
 
   player.onplaying = () => { $('#playerStatus').textContent = 'Streaming...'; };
-  player.onwaiting = () => { $('#playerStatus').textContent = 'Buffering...'; };
   player.onerror = () => {
     $('#playerStatus').textContent = 'Stream error - the torrent may have no peers. Try a different release.';
   };
+
+  state.activeStreams.set(torrent.infoHash, { name: name || torrent.name, torrent, fileIndex: file.index });
+  renderActiveStreams();
 }
 
 function renderActiveStreams() {
@@ -474,19 +614,21 @@ function renderActiveStreams() {
     return;
   }
   let html = '';
-  state.activeStreams.forEach((s, key) => {
-    const [hash, index] = key.split('/');
-    html += `<div class="file-row" data-hash="${hash}" data-index="${index}" data-name="${esc(s.name)}" data-tc="${s.transcode ? 1 : 0}">
+  state.activeStreams.forEach((s) => {
+    const pct = Math.round((s.torrent.progress || 0) * 100);
+    html += `<div class="file-row">
       <span class="fname">▶ ${esc(s.name)}</span>
-      <span class="fsize">${s.transcode ? 'sound fix' : 'active'}</span>
+      <span class="fsize">${pct}% · ${fmtSpeed(s.torrent.downloadSpeed)}</span>
       <button class="stop-btn">Replay</button>
     </div>`;
   });
   box.innerHTML = html;
-  $$('#linksPanel .file-row').forEach((row) => {
-    row.onclick = () => startStream({
-      hash: row.dataset.hash, name: row.dataset.name, index: row.dataset.index, transcode: row.dataset.tc === '1',
-    });
+  $$('#linksPanel .file-row').forEach((row, idx) => {
+    row.onclick = () => {
+      const s = [...state.activeStreams.values()][idx];
+      const file = s.torrent.files[s.fileIndex];
+      if (file) startStream(s.torrent, file, s.name);
+    };
   });
 }
 
@@ -511,18 +653,26 @@ $('#searchForm').addEventListener('submit', (e) => {
 
 $$('.modal-backdrop').forEach((bd) => {
   bd.addEventListener('click', (e) => {
-    if (e.target === bd) bd.hidden = true;
+    if (e.target === bd) {
+      if (bd.id === 'playerBackdrop') destroyRenderer();
+      bd.hidden = true;
+    }
   });
 });
 
 $$('.close-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
-    btn.closest('.modal-backdrop').hidden = true;
+    const bd = btn.closest('.modal-backdrop');
+    if (bd.id === 'playerBackdrop') destroyRenderer();
+    bd.hidden = true;
   });
 });
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') $$('.modal-backdrop').forEach((m) => (m.hidden = true));
+  if (e.key === 'Escape') {
+    $$('.modal-backdrop').forEach((m) => (m.hidden = true));
+    destroyRenderer();
+  }
 });
 
 document.addEventListener('click', (e) => {
@@ -541,16 +691,17 @@ function playIntro() {
 }
 
 // ---------- init ----------
-async function init() {
+function init() {
   playIntro();
+  if (typeof WebTorrent !== 'undefined') {
+    try {
+      state.client = new WebTorrent();
+    } catch (e) {
+      state.client = null;
+    }
+  }
   loadHome();
-  try {
-    const st = await api('/api/status');
-    state.ffmpeg = !!st.ffmpeg;
-  } catch (e) { /* keep false */ }
-  try {
-    if ('serviceWorker' in navigator) await navigator.serviceWorker.register('sw.js');
-  } catch (e) { /* sw not critical */ }
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
 init();
