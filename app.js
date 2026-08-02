@@ -192,8 +192,20 @@ function flixCardHTML(t) {
 
 // ---------- poster hydration (grid cards) ----------
 const metaCache = new Map();
-let metaQueue = [];
-let metaBusy = false;
+
+function metaFor(imdb) {
+  if (!imdb || !/^tt\d+$/.test(imdb)) return null;
+  if (metaCache.has(imdb)) return metaCache.get(imdb);
+  const meta = {
+    imdb: imdb,
+    name: '',
+    year: null,
+    poster: `https://images.metahub.space/poster/medium/${imdb}/img`,
+    background: `https://images.metahub.space/background/medium/${imdb}/img`,
+  };
+  metaCache.set(imdb, meta);
+  return meta;
+}
 
 function revealCard(card) {
   if (card) card.classList.remove('card-loading');
@@ -238,73 +250,10 @@ function applyPoster(card, meta) {
   p.insertBefore(img, p.firstChild);
 }
 
-async function fetchMeta(imdb) {
-  if (metaCache.has(imdb)) return metaCache.get(imdb);
-  const tryFetch = async (type) => {
-    try {
-      const j = await fetchJSON(`https://v3-cinemeta.strem.io/meta/${type}/${imdb}.json`);
-      const m = j && j.meta;
-      if (!m) return null;
-      return {
-        imdb: imdb,
-        name: m.name,
-        year: m.year,
-        type: m.type || type,
-        poster: m.poster || '',
-        background: m.background || m.poster || '',
-      };
-    } catch (e) {
-      return null;
-    }
-  };
-  const [movie, series] = await Promise.all([tryFetch('movie'), tryFetch('series')]);
-  let meta = movie;
-  if ((movie && !movie.poster) || !movie) meta = series || movie;
-  if (meta) metaCache.set(imdb, meta);
-  return meta;
-}
-
-async function fetchMetas(ids) {
-  const uniq = [...new Set(ids.filter((i) => i && /^tt\d+$/.test(i)))];
-  const metas = {};
-  let i = 0;
-  const worker = async () => {
-    while (i < uniq.length) {
-      const id = uniq[i++];
-      const meta = await fetchMeta(id);
-      if (meta) metas[id] = meta;
-    }
-  };
-  await Promise.all(Array.from({ length: 6 }, worker));
-  return metas;
-}
-
-async function scheduleMetaDrain() {
-  if (metaBusy) return;
-  metaBusy = true;
-  while (metaQueue.length) {
-    const batch = metaQueue.splice(0, 8);
-    await Promise.all(batch.map(async ({ card, imdb }) => {
-      const meta = await fetchMeta(imdb);
-      if (meta) applyPoster(card, meta);
-      else applyDefault(card);
-    }));
-    await new Promise((r) => setTimeout(r, 40));
-  }
-  metaBusy = false;
-}
-
 function hydrateCard(card, t) {
-  if (!t.imdb || !/^tt\d+$/.test(t.imdb)) {
-    applyDefault(card);
-    return;
-  }
-  if (metaCache.has(t.imdb)) {
-    applyPoster(card, metaCache.get(t.imdb));
-    return;
-  }
-  metaQueue.push({ card, imdb: t.imdb });
-  scheduleMetaDrain();
+  const meta = metaFor(t.imdb);
+  if (meta) applyPoster(card, meta);
+  else applyDefault(card);
 }
 
 function renderGrid(el, list, emptyMsg, opts) {
@@ -371,10 +320,11 @@ async function loadHome() {
   try {
     const rows = await fetchJSON('https://apibay.org/precompiled/data_top100_all.json');
     state.top = normalize(Array.isArray(rows) ? rows : []);
-    const imdbs = [...new Set(state.top.map((t) => t.imdb).filter((i) => i && /^tt\d+$/.test(i)))];
-    const metas = await fetchMetas(imdbs);
-    state.metas = metas;
-    Object.keys(metas).forEach((k) => metaCache.set(k, metas[k]));
+    state.metas = {};
+    state.top.forEach((t) => {
+      const meta = metaFor(t.imdb);
+      if (meta) state.metas[t.imdb] = meta;
+    });
 
     const withImg = state.top.filter((t) => state.metas[t.imdb] && state.metas[t.imdb].poster);
     const movies = withImg.filter((t) => CATS.movies.has(t.category));
@@ -456,7 +406,7 @@ async function openDetail(t) {
   const head = $('#detailHead');
   const title = $('#detailTitle');
   const body = $('#detailBody');
-  const meta = metaCache.get(t.imdb);
+  const meta = metaCache.get(t.imdb) || metaFor(t.imdb);
   const bg = (meta && (meta.background || meta.poster)) || '';
 
   title.textContent = t.name;
