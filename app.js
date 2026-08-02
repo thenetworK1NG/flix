@@ -26,6 +26,7 @@ const state = {
   client: null,
   renderer: null,
   activeStreams: new Map(),
+  detailHash: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -43,6 +44,10 @@ function fmtSize(bytes) {
 
 function fmtSpeed(bytes) {
   return fmtSize(bytes) + '/s';
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 function fmtDate(ts) {
@@ -270,6 +275,7 @@ function renderGrid(el, list, emptyMsg, opts) {
     const card = cards[i];
     if (card) hydrateCard(card, t);
   });
+  cards.forEach((card, i) => queueSweep(list[i], card));
 }
 
 function renderFlixRow(id, list) {
@@ -284,6 +290,8 @@ function renderFlixRow(id, list) {
   if (block) block.style.display = '';
   list.forEach((t) => state.items.set(`${t.hash}:${t.id}`, t));
   el.innerHTML = list.map(flixCardHTML).join('');
+  const cards = el.querySelectorAll('.flix-card');
+  cards.forEach((card, i) => queueSweep(list[i], card));
 }
 
 // ---------- hero ----------
@@ -308,10 +316,11 @@ function renderHero(t) {
     </div>`;
   el.querySelector('.hero-play').onclick = (e) => {
     e.stopPropagation();
-    $('#modalBackdrop').hidden = true;
+    hideModal($('#modalBackdrop'));
     playTorrent(t);
   };
   el.onclick = () => openDetail(t);
+  queueSweep(t, null, () => { if (el) el.style.display = 'none'; });
 }
 
 // ---------- data ----------
@@ -372,14 +381,14 @@ async function doSearch(q) {
 }
 
 // ---------- webtorrent ----------
-function getTorrent(t) {
+function getTorrent(t, timeoutMs) {
   if (!state.client) return Promise.reject(new Error('WebTorrent not loaded - check your connection'));
   const magnetURI = t.magnet;
   let torrent = state.client.get(magnetURI);
   if (!torrent) torrent = state.client.add(magnetURI);
   return new Promise((resolve, reject) => {
     if (torrent.ready || torrent.metadata) return resolve(torrent);
-    const timer = setTimeout(() => reject(new Error('metadata timeout - no peers yet, try again')), 45000);
+    const timer = setTimeout(() => reject(new Error('metadata timeout - no peers yet, try again')), timeoutMs || 45000);
     torrent.once('ready', () => { clearTimeout(timer); resolve(torrent); });
     torrent.once('error', (e) => { clearTimeout(timer); reject(e || new Error('torrent error')); });
   });
@@ -389,6 +398,85 @@ function torrentFiles(torrent) {
   return torrent.files
     .map((f, i) => ({ index: i, name: f.name, size: f.length, type: extToMime(f.name) }))
     .filter((f) => f.type);
+}
+
+// ---------- streamability sweep ----------
+// After a list renders, background-check each torrent's real file list (metadata
+// only - no data download) and remove any card with no browser-playable video file.
+const sweepQueue = [];
+const sweepPending = new WeakSet();
+const sweepDone = new Set();
+const sweepRemoved = new Set();
+const SWEEP_CONCURRENCY = 3;
+const SWEEP_TIMEOUT = 15000;
+let sweepActive = 0;
+let sweepIndex = 0;
+let sweepStarted = false;
+
+function queueSweep(t, card, onUnstreamable) {
+  if (!state.client) return;
+  const key = `${t.hash}:${t.id}`;
+  if (sweepRemoved.has(key)) {
+    if (onUnstreamable) onUnstreamable();
+    else removeSweptCard(card, t);
+    return;
+  }
+  if (sweepDone.has(key) || sweepPending.has(t)) return;
+  sweepPending.add(t);
+  if (!sweepStarted) {
+    sweepStarted = true;
+    showToast('Checking which releases you can stream...');
+  }
+  sweepQueue.push({ t, card, onUnstreamable });
+  pumpSweep();
+}
+
+function removeSweptCard(card, t) {
+  if (!card || !card.isConnected) return;
+  const grid = card.parentElement;
+  card.classList.add('card-removing');
+  setTimeout(() => {
+    card.remove();
+    if (!grid || grid.querySelector('.card, .flix-card') || grid.querySelector('.empty-note')) return;
+    const block = grid.closest('.row-block');
+    if (block) block.style.display = 'none';
+    else grid.innerHTML = '<div class="empty-note">No releases in this section can be streamed in your browser (most releases are MKV).</div>';
+  }, 260);
+}
+
+async function processSweepItem(item) {
+  const t = item.t;
+  const key = `${t.hash}:${t.id}`;
+  try {
+    const torrent = await getTorrent(t, SWEEP_TIMEOUT);
+    const hasVideo = torrentFiles(torrent).some((f) => f.type.startsWith('video') && browserPlayable(f.name));
+    if (!hasVideo) {
+      sweepRemoved.add(key);
+      if (item.onUnstreamable) item.onUnstreamable();
+      else removeSweptCard(item.card, t);
+    }
+    if (torrent.infoHash && !state.activeStreams.has(torrent.infoHash) && state.detailHash !== torrent.infoHash) {
+      try { state.client.remove(torrent.infoHash, () => {}); } catch (e) {}
+    }
+  } catch (e) {
+    // no metadata reached - leave the card visible until it resolves another time
+  }
+  sweepDone.add(key);
+}
+
+function pumpSweep() {
+  while (sweepActive < SWEEP_CONCURRENCY && sweepIndex < sweepQueue.length) {
+    const item = sweepQueue[sweepIndex++];
+    sweepActive++;
+    processSweepItem(item).then(() => {
+      sweepActive--;
+      pumpSweep();
+    });
+  }
+  if (sweepActive === 0 && sweepIndex >= sweepQueue.length && sweepStarted) {
+    sweepStarted = false;
+    showToast('Finished checking which releases you can stream.');
+  }
 }
 
 function copyMagnet(t) {
@@ -409,6 +497,7 @@ async function openDetail(t) {
   const meta = metaCache.get(t.imdb) || metaFor(t.imdb);
   const bg = (meta && (meta.background || meta.poster)) || '';
 
+  state.detailHash = t.hash;
   title.textContent = t.name;
   head.style.backgroundImage = bg ? `url("${bg}")` : '';
 
@@ -432,7 +521,7 @@ async function openDetail(t) {
 
   modal.hidden = false;
 
-  $('#playBtn').onclick = () => { modal.hidden = true; playTorrent(t); };
+  $('#playBtn').onclick = () => { hideModal(modal); playTorrent(t); };
   $('#magnetBtn').onclick = () => copyMagnet(t);
   $('#openBtn').onclick = () => window.open(t.magnet, '_blank');
 
@@ -502,7 +591,7 @@ function renderFiles(container, torrent, t) {
 
   $$('.play-file').forEach((row) => {
     const play = () => {
-      $('#modalBackdrop').hidden = true;
+      hideModal($('#modalBackdrop'));
       const file = torrent.files[parseInt(row.dataset.index, 10)];
       if (file) startStream(torrent, file, file.name);
     };
@@ -584,6 +673,12 @@ function renderActiveStreams() {
 }
 
 // ---------- navigation ----------
+function hideModal(bd) {
+  if (!bd) return;
+  if (bd.id === 'modalBackdrop') state.detailHash = null;
+  bd.hidden = true;
+}
+
 function switchSection(name) {
   $$('.section').forEach((s) => s.classList.remove('active'));
   const sec = $('#section-' + name);
@@ -606,7 +701,7 @@ $$('.modal-backdrop').forEach((bd) => {
   bd.addEventListener('click', (e) => {
     if (e.target === bd) {
       if (bd.id === 'playerBackdrop') destroyRenderer();
-      bd.hidden = true;
+      hideModal(bd);
     }
   });
 });
@@ -615,13 +710,13 @@ $$('.close-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
     const bd = btn.closest('.modal-backdrop');
     if (bd.id === 'playerBackdrop') destroyRenderer();
-    bd.hidden = true;
+    hideModal(bd);
   });
 });
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    $$('.modal-backdrop').forEach((m) => (m.hidden = true));
+    $$('.modal-backdrop').forEach((m) => hideModal(m));
     destroyRenderer();
   }
 });

@@ -53,5 +53,5 @@ The workflow file is `.github/workflows/pages.yml`.
 
 - Browsers talk to `apibay.org` directly (allows CORS). Posters load from `images.metahub.space`.
 - Playback depends on peers and on **WebRTC/WebSocket trackers**. Well-seeded releases start quickly; the browser can only reach peers that speak WebTorrent, so some torrents may not start — use the magnet link with a desktop app (e.g. VLC) for those.
-- Browsers can only play `MP4`/`WebM`/`OGV` video and `MP3`/`M4A`/`AAC`/`OGG`/`Opus`/`FLAC`/`WAV` audio. When you open a torrent, the file list only shows browser-playable files; non-playable formats (mostly MKV/AVI) are hidden, and if a release has none the app says so and offers the magnet link for VLC.
+- Browsers can only play `MP4`/`WebM`/`OGV` video and `MP3`/`M4A`/`AAC`/`OGG`/`Opus`/`FLAC`/`WAV` audio. After a list renders, FLIX background-checks each release's real file list (metadata only, no data download) and removes any card that has no browser-playable video file — so releases that can't stream (mostly MKV/AVI) disappear from the lists entirely. Because the Pirate Bay catalog API doesn't expose file lists, this check runs over WebTorrent's peer metadata; releases with no reachable peers stay visible until a check succeeds.
 - Only stream content you are legally allowed to access.
