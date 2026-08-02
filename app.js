@@ -17,8 +17,7 @@ const TRACKERS = [
 ];
 
 const BROWSER_VIDEO = new Set(['mp4', 'm4v', 'webm', 'ogv']);
-const BROWSER_AUDIO = new Set(['mp3', 'm4a', 'aac', 'ogg', 'opus', 'wav']);
-const REMUXABLE = new Set(['mkv', 'mov', 'ts', 'm2ts', 'mts']);
+const BROWSER_AUDIO = new Set(['mp3', 'm4a', 'aac', 'ogg', 'opus', 'flac', 'wav']);
 
 const state = {
   top: [],
@@ -26,10 +25,6 @@ const state = {
   metas: {},
   client: null,
   renderer: null,
-  mediabunny: null,
-  mse: null,
-  mseUrl: null,
-  msePlayback: null,
   activeStreams: new Map(),
 };
 
@@ -127,10 +122,6 @@ function extToMime(name) {
 function browserPlayable(name) {
   const ext = extOf(name);
   return BROWSER_VIDEO.has(ext) || BROWSER_AUDIO.has(ext);
-}
-
-function remuxable(name) {
-  return REMUXABLE.has(extOf(name));
 }
 
 function magnet(hash, name) {
@@ -460,17 +451,14 @@ async function playTorrent(t) {
     const media = torrentFiles(torrent).filter((f) => f.type.startsWith('video') || f.type.startsWith('audio'));
     if (!media.length) throw new Error('no playable media files in this torrent');
     const pick = media.find((f) => f.type.startsWith('video') && browserPlayable(f.name)) ||
-      media.find((f) => f.type.startsWith('video')) ||
+      media.find((f) => f.type.startsWith('audio') && browserPlayable(f.name)) ||
       media[0];
-    const file = torrent.files[pick.index];
     if (!browserPlayable(pick.name)) {
-      if (remuxable(pick.name) && state.mediabunny) {
-        startStream(torrent, file, pick.name, true);
-        return;
-      }
-      alert('Browsers cannot play ' + extOf(pick.name).toUpperCase() + ' files. Use the magnet link with VLC instead.');
+      copyMagnet(t);
+      alert('This release has no files your browser can play (most releases are MKV).\nThe magnet link was copied - open it in VLC or a torrent app instead.');
       return;
     }
+    const file = torrent.files[pick.index];
     startStream(torrent, file, torrent.name || t.name);
   } catch (e) {
     alert('Could not start stream: ' + e.message + '. Try the magnet link with a torrent app instead.');
@@ -482,11 +470,16 @@ async function playTorrent(t) {
 function renderFiles(container, torrent, t) {
   const host = container.querySelector('.detail-files');
   const files = torrentFiles(torrent);
-  const videos = files.filter((f) => f.type.startsWith('video'));
-  const others = files.filter((f) => f.type.startsWith('audio'));
+  const videos = files.filter((f) => f.type.startsWith('video') && browserPlayable(f.name));
+  const others = files.filter((f) => f.type.startsWith('audio') && browserPlayable(f.name));
+  const hidden = files.length - videos.length - others.length;
 
   if (!videos.length && !others.length) {
-    host.innerHTML = '<h4>Files</h4><p class="empty-note">No playable files found in this torrent.</p>';
+    host.innerHTML = `<h4>Files</h4>
+      <p class="empty-note">No files in this release are playable in your browser (most releases are MKV).</p>
+      <button class="tc-btn" id="filesMagnet">Copy magnet</button>`;
+    const b = host.querySelector('#filesMagnet');
+    if (b) b.onclick = () => copyMagnet(t);
     return;
   }
 
@@ -496,31 +489,24 @@ function renderFiles(container, torrent, t) {
     ...others.map((f) => ({ ...f, icon: '♪' })),
   ];
   all.forEach((f) => {
-    const native = browserPlayable(f.name);
-    const remux = !native && remuxable(f.name) && !!state.mediabunny;
-    const mode = native ? 'native' : (remux ? 'remux' : 'vlc');
-    const badge = mode === 'vlc'
-      ? '<button class="tc-btn" title="Browsers cannot play this format - open the magnet in VLC">VLC</button>'
-      : '<button class="play-btn">Play</button>';
-    const size = mode === 'vlc' ? `${fmtSize(f.size)} · VLC only` : fmtSize(f.size);
-    html += `<div class="file-row play-file" data-hash="${t.hash}" data-index="${f.index}" data-mode="${mode}">
+    html += `<div class="file-row play-file" data-index="${f.index}">
       <span class="fname">${f.icon} ${esc(f.name)}</span>
-      <span class="fsize">${size}</span>
-      <span class="row-btns">${badge}</span>
+      <span class="fsize">${fmtSize(f.size)}</span>
+      <span class="row-btns"><button class="play-btn">Play</button></span>
     </div>`;
   });
+  if (hidden) {
+    html += `<p class="empty-note">${hidden} file${hidden === 1 ? '' : 's'} (MKV etc.) hidden - not playable in your browser.</p>`;
+  }
   host.innerHTML = html;
 
   $$('.play-file').forEach((row) => {
     const play = () => {
       $('#modalBackdrop').hidden = true;
       const file = torrent.files[parseInt(row.dataset.index, 10)];
-      if (!file) return;
-      if (row.dataset.mode === 'remux') startStream(torrent, file, file.name, true);
-      else if (row.dataset.mode === 'native') startStream(torrent, file, file.name);
-      else copyMagnet(t);
+      if (file) startStream(torrent, file, file.name);
     };
-    row.querySelector('.play-btn, .tc-btn').onclick = (e) => {
+    row.querySelector('.play-btn').onclick = (e) => {
       e.stopPropagation();
       play();
     };
@@ -536,48 +522,19 @@ function destroyRenderer() {
   }
 }
 
-function closeMsePlayback() {
-  const p = state.msePlayback;
-  state.msePlayback = null;
-  if (p) {
-    try { p.conversion.cancel(); } catch (e) {}
-    try { p.input.dispose(); } catch (e) {}
-  }
-  if (state.mseUrl) {
-    try { URL.revokeObjectURL(state.mseUrl); } catch (e) {}
-    state.mseUrl = null;
-  }
-  state.mse = null;
-}
-
-function stopPlayback() {
-  destroyRenderer();
-  closeMsePlayback();
-  const player = $('#player');
-  if (player) player.src = '';
-}
-
-function startStream(torrent, file, name, remux) {
+function startStream(torrent, file, name) {
   if (!state.client) {
     showToast('WebTorrent unavailable');
     return;
   }
-  stopPlayback();
+  destroyRenderer();
   const player = $('#player');
   $('#playerTitle').textContent = name || torrent.name;
   $('#playerStatus').textContent = 'Connecting to peers...';
-  $('#playerHint').textContent = remux
-    ? `Remuxing ${extOf(name).toUpperCase()} in your browser - start may take a moment. Audio needs a supported codec (AAC/MP3/Opus); for AC3/DTS use the magnet link in VLC.`
-    : 'Playing in your browser over WebTorrent. No sound or won\'t play? Use the magnet link in VLC.';
+  $('#playerHint').textContent = 'Playing in your browser over WebTorrent. No sound or won\'t play? Use the magnet link in VLC.';
   $('#playerBackdrop').hidden = false;
 
   player.src = '';
-
-  if (remux) {
-    playRemuxed(torrent, file, name);
-    return;
-  }
-
   file.renderTo(player, { autoplay: true }, (err, renderer) => {
     if (err) {
       $('#playerStatus').textContent = 'Could not render: ' + (err.message || 'unknown error');
@@ -599,158 +556,6 @@ function startStream(torrent, file, name, remux) {
 
   state.activeStreams.set(torrent.infoHash, { name: name || torrent.name, torrent, fileIndex: file.index });
   renderActiveStreams();
-}
-
-function readRange(file, start, end) {
-  return new Promise((resolve, reject) => {
-    let rs;
-    try { rs = file.createReadStream({ start, end: end - 1 }); } catch (e) { reject(e); return; }
-    const buf = new Uint8Array(end - start);
-    let off = 0;
-    rs.on('data', (c) => { buf.set(c, off); off += c.length; });
-    rs.on('end', () => resolve(buf));
-    rs.on('error', reject);
-  });
-}
-
-function makeMseSink() {
-  let sb = null;
-  const queue = [];
-  let draining = Promise.resolve();
-
-  const waitUpdate = () => new Promise((resolve) => {
-    const done = () => { sb.removeEventListener('updateend', done); resolve(); };
-    sb.addEventListener('updateend', done, { once: true });
-  });
-
-  const trimTo = async (keepSeconds) => {
-    if (!sb || sb.updating || !sb.buffered.length) return false;
-    const end = sb.buffered.end(sb.buffered.length - 1);
-    const start = sb.buffered.start(0);
-    if (end - start <= keepSeconds) return false;
-    await new Promise((resolve) => {
-      const done = () => { sb.removeEventListener('updateend', done); resolve(); };
-      sb.addEventListener('updateend', done, { once: true });
-      sb.remove(0, end - keepSeconds);
-    });
-    return true;
-  };
-
-  const appendOne = async (data) => {
-    if (!sb) return;
-    for (;;) {
-      try {
-        sb.appendBuffer(data);
-        break;
-      } catch (e) {
-        if (e.name !== 'QuotaExceededError' || !(await trimTo(30))) throw e;
-      }
-    }
-    await waitUpdate();
-  };
-
-  const pump = () => {
-    draining = draining
-      .then(async () => {
-        while (queue.length) {
-          await trimTo(120);
-          await appendOne(queue.shift());
-        }
-      })
-      .catch((e) => console.error('MSE append error', e));
-    return draining;
-  };
-
-  return {
-    writable: new WritableStream({
-      write(chunk) {
-        queue.push(chunk.data);
-        if (sb) pump();
-      },
-    }),
-    attach(_sb) { sb = _sb; if (queue.length) pump(); },
-    flushEnd() { return pump(); },
-  };
-}
-
-async function initMse(mimeType, sink) {
-  const player = $('#player');
-  const ms = new MediaSource();
-  state.mseUrl = URL.createObjectURL(ms);
-  player.src = state.mseUrl;
-  await new Promise((resolve, reject) => {
-    const onOpen = () => {
-      try {
-        const sb = ms.addSourceBuffer(mimeType);
-        sink.attach(sb);
-        resolve();
-      } catch (e) { reject(e); }
-    };
-    ms.addEventListener('sourceopen', onOpen, { once: true });
-    ms.addEventListener('error', () => {
-      ms.removeEventListener('sourceopen', onOpen);
-      reject(new Error('MediaSource error'));
-    }, { once: true });
-  });
-  state.mse = ms;
-}
-
-async function playRemuxed(torrent, file, name) {
-  const mb = state.mediabunny;
-  if (!mb) {
-    $('#playerStatus').textContent = 'Playback engine not loaded - use the magnet link with VLC instead.';
-    return;
-  }
-  const player = $('#player');
-  $('#playerStatus').textContent = `Preparing ${extOf(name).toUpperCase()} (remuxing in browser)...`;
-  const sink = makeMseSink();
-  let input = null;
-  let conversion = null;
-  try {
-    const source = new mb.CustomSource({
-      getSize: async () => file.length,
-      read: (start, end) => readRange(file, start, end),
-      maxCacheSize: 16 * 1024 * 1024,
-      prefetchProfile: 'network',
-    });
-    input = new mb.Input({ source, formats: mb.ALL_FORMATS });
-    const output = new mb.Output({
-      format: new mb.Mp4OutputFormat({ fastStart: 'fragmented' }),
-      target: new mb.StreamTarget(sink.writable),
-    });
-    conversion = await mb.Conversion.init({
-      input,
-      output,
-      tracks: 'primary',
-      composable: true,
-      showWarnings: false,
-      video: async (track) => ((await track.canDecode()) ? {} : { discard: true }),
-      audio: async (track) => ((await track.canDecode()) ? {} : { discard: true }),
-    });
-    state.msePlayback = { input, conversion };
-    const audioDiscarded = conversion.discardedTracks.some((d) => d.track && d.track.isAudioTrack());
-    if (!conversion.utilizedTracks.some((t) => t.isVideoTrack())) {
-      throw new Error('video codec not supported by your browser');
-    }
-    await output.start();
-    const mimeType = await output.getMimeType();
-    await initMse(mimeType, sink);
-    player.play().catch(() => {});
-    if (audioDiscarded) showToast('Audio codec not supported - playing video only. Use the magnet in VLC for sound.');
-    $('#playerStatus').textContent = 'Streaming...';
-    state.activeStreams.set(torrent.infoHash, { name: name || torrent.name, torrent, fileIndex: file.index });
-    renderActiveStreams();
-    await conversion.execute();
-    await output.finalize();
-    await sink.flushEnd();
-    const ms = state.mse;
-    if (ms && ms.readyState === 'open') ms.endOfStream();
-  } catch (e) {
-    const msg = (e && e.message) || String(e);
-    player.src = '';
-    closeMsePlayback();
-    $('#playerStatus').textContent = 'Remux failed: ' + msg + '. Use the magnet link with VLC instead.';
-  }
 }
 
 function renderActiveStreams() {
@@ -800,7 +605,7 @@ $('#searchForm').addEventListener('submit', (e) => {
 $$('.modal-backdrop').forEach((bd) => {
   bd.addEventListener('click', (e) => {
     if (e.target === bd) {
-      if (bd.id === 'playerBackdrop') stopPlayback();
+      if (bd.id === 'playerBackdrop') destroyRenderer();
       bd.hidden = true;
     }
   });
@@ -809,7 +614,7 @@ $$('.modal-backdrop').forEach((bd) => {
 $$('.close-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
     const bd = btn.closest('.modal-backdrop');
-    if (bd.id === 'playerBackdrop') stopPlayback();
+    if (bd.id === 'playerBackdrop') destroyRenderer();
     bd.hidden = true;
   });
 });
@@ -817,7 +622,7 @@ $$('.close-btn').forEach((btn) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     $$('.modal-backdrop').forEach((m) => (m.hidden = true));
-    stopPlayback();
+    destroyRenderer();
   }
 });
 
@@ -846,7 +651,6 @@ function init() {
       state.client = null;
     }
   }
-  if (typeof Mediabunny !== 'undefined') state.mediabunny = Mediabunny;
   loadHome();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 }

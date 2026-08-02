@@ -53,5 +53,5 @@ The workflow file is `.github/workflows/pages.yml`.
 
 - Browsers talk to `apibay.org` directly (allows CORS). Posters load from `images.metahub.space`.
 - Playback depends on peers and on **WebRTC/WebSocket trackers**. Well-seeded releases start quickly; the browser can only reach peers that speak WebTorrent, so some torrents may not start — use the magnet link with a desktop app (e.g. VLC) for those.
-- Browsers can natively play `MP4`/`WebM`/`M4A`/`MP3` etc. **MKV / MOV / TS files are remuxed in-browser to MP4** using [mediabunny](https://mediabunny.dev) + MediaSource, so they play without a server. Video (H.264/HEVC when supported) passes through; audio only plays if the codec is browser-decodable (AAC/MP3/Opus) — AC3/DTS audio is dropped (video plays silently) and a toast explains. Formats mediabunny can't read (e.g. AVI) still fall back to the VLC/magnet path.
+- Browsers can only play `MP4`/`WebM`/`OGV` video and `MP3`/`M4A`/`AAC`/`OGG`/`Opus`/`FLAC`/`WAV` audio. When you open a torrent, the file list only shows browser-playable files; non-playable formats (mostly MKV/AVI) are hidden, and if a release has none the app says so and offers the magnet link for VLC.
 - Only stream content you are legally allowed to access.
