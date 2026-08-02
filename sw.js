@@ -1,6 +1,6 @@
 'use strict';
 
-const CACHE = 'stremio-web-v13';
+const CACHE = 'stremio-web-v14';
 const ASSETS = [
   './',
   './index.html',
