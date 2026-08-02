@@ -13,7 +13,6 @@ const TRACKERS = [
   'udp://explodie.org:6969/announce',
   'wss://tracker.openwebtorrent.com',
   'wss://tracker.btorrent.xyz',
-  'wss://tracker.fastcast.nz',
 ];
 
 const BROWSER_VIDEO = new Set(['mp4', 'm4v', 'webm', 'ogv']);
